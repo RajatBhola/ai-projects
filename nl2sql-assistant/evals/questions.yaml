@@ -1,0 +1,240 @@
+# Evaluation set: questions with hand-written "gold" SQL.
+#
+# Gold SQL is written in DuckDB SQL and auto-translated for SQLite; where
+# translation isn't reliable (interval arithmetic), `gold_sql_sqlite` overrides it.
+# `ordered: true` means row order matters (time series, rankings shown as lists).
+# `unanswerable: true` means the right behaviour is to decline.
+
+questions:
+  # ---------------------------------------------------------------- easy
+  - id: e01
+    difficulty: easy
+    category: counting
+    question: How many customers do we have?
+    gold_sql: SELECT COUNT(*) AS customer_count FROM customers
+
+  - id: e02
+    difficulty: easy
+    category: grouping
+    question: How many customers are there in each country?
+    gold_sql: |
+      SELECT country, COUNT(*) AS customers FROM customers GROUP BY country
+
+  - id: e03
+    difficulty: easy
+    category: grouping
+    question: How many products are in each category?
+    gold_sql: |
+      SELECT category, COUNT(*) AS products FROM products GROUP BY category
+
+  - id: e04
+    difficulty: easy
+    category: filtering
+    question: How many orders were cancelled?
+    gold_sql: SELECT COUNT(*) AS cancelled_orders FROM orders WHERE status = 'cancelled'
+
+  - id: e05
+    difficulty: easy
+    category: filtering
+    question: What is the average list price of products in the Electronics category?
+    gold_sql: |
+      SELECT ROUND(AVG(list_price), 2) AS avg_price FROM products WHERE category = 'Electronics'
+
+  # ---------------------------------------------------------------- medium
+  - id: m01
+    difficulty: medium
+    category: business_term
+    question: What was our total revenue in 2025?
+    gold_sql: |
+      SELECT ROUND(SUM(oi.quantity * oi.unit_price * (1 - oi.discount)), 2) AS revenue
+      FROM orders o JOIN order_items oi ON oi.order_id = o.order_id
+      WHERE o.status = 'completed'
+        AND o.order_date >= DATE '2025-01-01' AND o.order_date <= DATE '2025-12-31'
+
+  - id: m02
+    difficulty: medium
+    category: business_term
+    question: Show revenue by product category, highest first.
+    ordered: true
+    gold_sql: |
+      SELECT p.category, ROUND(SUM(oi.quantity * oi.unit_price * (1 - oi.discount)), 2) AS revenue
+      FROM orders o
+      JOIN order_items oi ON oi.order_id = o.order_id
+      JOIN products p ON p.product_id = oi.product_id
+      WHERE o.status = 'completed'
+      GROUP BY p.category
+      ORDER BY revenue DESC
+
+  - id: m03
+    difficulty: medium
+    category: ranking
+    question: What are the top 5 products by units sold?
+    gold_sql: |
+      SELECT p.product_name, SUM(oi.quantity) AS units_sold
+      FROM orders o
+      JOIN order_items oi ON oi.order_id = o.order_id
+      JOIN products p ON p.product_id = oi.product_id
+      WHERE o.status = 'completed'
+      GROUP BY p.product_name
+      ORDER BY units_sold DESC
+      LIMIT 5
+
+  - id: m04
+    difficulty: medium
+    category: time_series
+    question: How many orders were placed each month in 2025?
+    ordered: true
+    gold_sql: |
+      SELECT strftime(order_date, '%Y-%m') AS month, COUNT(*) AS orders
+      FROM orders
+      WHERE order_date >= DATE '2025-01-01' AND order_date <= DATE '2025-12-31'
+      GROUP BY month
+      ORDER BY month
+
+  - id: m05
+    difficulty: medium
+    category: ranking
+    question: Which sales channel generated the most revenue?
+    gold_sql: |
+      SELECT o.channel, ROUND(SUM(oi.quantity * oi.unit_price * (1 - oi.discount)), 2) AS revenue
+      FROM orders o JOIN order_items oi ON oi.order_id = o.order_id
+      WHERE o.status = 'completed'
+      GROUP BY o.channel
+      ORDER BY revenue DESC
+      LIMIT 1
+
+  - id: m06
+    difficulty: medium
+    category: business_term
+    question: What is the average order value for each customer segment?
+    gold_sql: |
+      SELECT c.segment,
+             ROUND(SUM(oi.quantity * oi.unit_price * (1 - oi.discount)) / COUNT(DISTINCT o.order_id), 2) AS aov
+      FROM orders o
+      JOIN order_items oi ON oi.order_id = o.order_id
+      JOIN customers c ON c.customer_id = o.customer_id
+      WHERE o.status = 'completed'
+      GROUP BY c.segment
+
+  - id: m07
+    difficulty: medium
+    category: business_term
+    question: What is the return rate per sales channel?
+    gold_sql: |
+      SELECT channel,
+             ROUND(100.0 * SUM(CASE WHEN status = 'returned' THEN 1 ELSE 0 END) / COUNT(*), 2) AS return_rate_pct
+      FROM orders
+      WHERE status IN ('completed', 'returned')
+      GROUP BY channel
+
+  - id: m08
+    difficulty: medium
+    category: ranking
+    question: Which 3 countries had the highest revenue in 2024?
+    gold_sql: |
+      SELECT c.country, ROUND(SUM(oi.quantity * oi.unit_price * (1 - oi.discount)), 2) AS revenue
+      FROM orders o
+      JOIN order_items oi ON oi.order_id = o.order_id
+      JOIN customers c ON c.customer_id = o.customer_id
+      WHERE o.status = 'completed'
+        AND o.order_date >= DATE '2024-01-01' AND o.order_date <= DATE '2024-12-31'
+      GROUP BY c.country
+      ORDER BY revenue DESC
+      LIMIT 3
+
+  # ---------------------------------------------------------------- hard
+  - id: h01
+    difficulty: hard
+    category: ranking
+    question: Who are our top 5 customers by total revenue? Show their name and country.
+    gold_sql: |
+      SELECT c.full_name, c.country,
+             ROUND(SUM(oi.quantity * oi.unit_price * (1 - oi.discount)), 2) AS revenue
+      FROM orders o
+      JOIN order_items oi ON oi.order_id = o.order_id
+      JOIN customers c ON c.customer_id = o.customer_id
+      WHERE o.status = 'completed'
+      GROUP BY c.customer_id, c.full_name, c.country
+      ORDER BY revenue DESC
+      LIMIT 5
+
+  - id: h02
+    difficulty: hard
+    category: anti_join
+    question: How many customers have never placed an order?
+    gold_sql: |
+      SELECT COUNT(*) AS customers_without_orders
+      FROM customers c
+      WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.customer_id)
+
+  - id: h03
+    difficulty: hard
+    category: business_term
+    question: What percentage of revenue came from business customers?
+    gold_sql: |
+      SELECT ROUND(100.0 * SUM(CASE WHEN c.segment = 'business'
+                                    THEN oi.quantity * oi.unit_price * (1 - oi.discount) ELSE 0 END)
+                   / SUM(oi.quantity * oi.unit_price * (1 - oi.discount)), 2) AS business_revenue_pct
+      FROM orders o
+      JOIN order_items oi ON oi.order_id = o.order_id
+      JOIN customers c ON c.customer_id = o.customer_id
+      WHERE o.status = 'completed'
+
+  - id: h04
+    difficulty: hard
+    category: business_term
+    question: How many active customers do we have?
+    gold_sql: |
+      SELECT COUNT(DISTINCT customer_id) AS active_customers
+      FROM orders
+      WHERE status = 'completed'
+        AND order_date > (SELECT MAX(order_date) FROM orders) - INTERVAL 90 DAY
+    gold_sql_sqlite: |
+      SELECT COUNT(DISTINCT customer_id) AS active_customers
+      FROM orders
+      WHERE status = 'completed'
+        AND order_date > date((SELECT MAX(order_date) FROM orders), '-90 days')
+
+  - id: h05
+    difficulty: hard
+    category: having
+    question: How many customers placed more than 15 orders?
+    gold_sql: |
+      SELECT COUNT(*) AS customers
+      FROM (SELECT customer_id FROM orders GROUP BY customer_id HAVING COUNT(*) > 15) t
+
+  - id: h06
+    difficulty: hard
+    category: comparison
+    question: Compare revenue in Q4 2024 with Q4 2025.
+    ordered: true
+    gold_sql: |
+      SELECT strftime(o.order_date, '%Y') AS year,
+             ROUND(SUM(oi.quantity * oi.unit_price * (1 - oi.discount)), 2) AS revenue
+      FROM orders o JOIN order_items oi ON oi.order_id = o.order_id
+      WHERE o.status = 'completed'
+        AND ((o.order_date >= DATE '2024-10-01' AND o.order_date <= DATE '2024-12-31')
+          OR (o.order_date >= DATE '2025-10-01' AND o.order_date <= DATE '2025-12-31'))
+      GROUP BY year
+      ORDER BY year
+
+  - id: h07
+    difficulty: hard
+    category: aggregation
+    question: On average, how many different products are in an order?
+    gold_sql: |
+      SELECT ROUND(AVG(n), 2) AS avg_products_per_order
+      FROM (SELECT order_id, COUNT(DISTINCT product_id) AS n FROM order_items GROUP BY order_id) t
+
+  # ---------------------------------------------------------------- unanswerable
+  - id: u01
+    difficulty: hard
+    category: unanswerable
+    question: What is our profit margin per product category?
+    unanswerable: true
+
+  - id: u02
+    difficulty: hard
+    category: unanswerable
+    question: How many visitors came to the website last week?
+    unanswerable: true

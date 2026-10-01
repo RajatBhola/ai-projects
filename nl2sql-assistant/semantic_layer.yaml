@@ -1,0 +1,89 @@
+# Semantic layer: maps business language onto the physical schema.
+#
+# The schema alone tells the model *what columns exist*; this file tells it
+# *what they mean* and how the business defines its metrics. It is the main
+# lever for accuracy: most wrong answers come from ambiguous terms like
+# "revenue" or "active customer", not from SQL syntax.
+
+tables:
+  customers:
+    description: One row per registered customer.
+    synonyms: [clients, users, buyers, accounts]
+    columns:
+      customer_id: Unique customer key.
+      full_name: Customer's full name.
+      email: Contact email (personal data; do not select unless asked).
+      country: Country the customer is based in, full English name (e.g. 'Netherlands').
+      segment: "'consumer' for individuals, 'business' for B2B accounts."
+      signup_date: Date the customer registered.
+
+  products:
+    description: Product catalog, one row per product.
+    synonyms: [items, catalog, SKUs, articles]
+    columns:
+      product_id: Unique product key.
+      product_name: Product display name.
+      category: Product category (Electronics, Home, Books, Sports, Beauty).
+      list_price: Current catalog price in EUR, before discounts.
+
+  orders:
+    description: One row per order (order header).
+    synonyms: [purchases, transactions, sales]
+    columns:
+      order_id: Unique order key.
+      customer_id: The customer who placed the order.
+      order_date: Date the order was placed.
+      status: "'completed', 'cancelled' or 'returned'. Only completed orders count as sales."
+      channel: "Where the order was placed: 'web', 'mobile_app' or 'marketplace'."
+
+  order_items:
+    description: Order lines, one row per product within an order.
+    synonyms: [order lines, line items, basket]
+    columns:
+      order_item_id: Unique order line key.
+      order_id: The order this line belongs to.
+      product_id: The product sold on this line.
+      quantity: Units sold on this line.
+      unit_price: Price per unit in EUR at the time of the order, before discount.
+      discount: Discount fraction applied to the line (0.1 = 10% off).
+
+relationships:
+  - orders.customer_id = customers.customer_id
+  - order_items.order_id = orders.order_id
+  - order_items.product_id = products.product_id
+
+# Business definitions. When a question uses one of these terms (or a synonym),
+# its definition is injected into the prompt.
+business_terms:
+  revenue:
+    synonyms: [sales, turnover, gmv, income, sales amount, money]
+    definition: >
+      Net revenue in EUR = SUM(order_items.quantity * order_items.unit_price * (1 - order_items.discount)),
+      counting only orders where orders.status = 'completed'.
+  order count:
+    synonyms: [number of orders, how many orders, orders placed]
+    definition: >
+      COUNT(DISTINCT orders.order_id). Include all statuses unless the question
+      says completed, cancelled or returned.
+  average order value:
+    synonyms: [aov, average basket, average order size]
+    definition: >
+      Revenue divided by the number of completed orders:
+      SUM(order_items.quantity * order_items.unit_price * (1 - order_items.discount))
+      / COUNT(DISTINCT orders.order_id), counting only orders where orders.status = 'completed'.
+  units sold:
+    synonyms: [quantity sold, items sold, volume]
+    definition: SUM(order_items.quantity) over orders where orders.status = 'completed'.
+  return rate:
+    synonyms: [returns, returned orders percentage]
+    definition: >
+      Share of orders with orders.status = 'returned' among orders that were completed or
+      returned (exclude cancelled), as a percentage.
+  active customer:
+    synonyms: [active customers, active users]
+    definition: >
+      A customer with at least one order with orders.status = 'completed' in the 90 days up to the latest
+      order_date in the data (not today's date).
+  new customer:
+    synonyms: [new customers, signups, new signups]
+    definition: A customer counted by customers.signup_date.

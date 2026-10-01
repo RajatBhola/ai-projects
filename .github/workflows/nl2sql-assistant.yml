@@ -1,0 +1,25 @@
+name: nl2sql-assistant tests
+
+on:
+  push:
+    paths: ["nl2sql-assistant/**", ".github/workflows/nl2sql-assistant.yml"]
+  pull_request:
+    paths: ["nl2sql-assistant/**", ".github/workflows/nl2sql-assistant.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nl2sql-assistant
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      # Runs on both SQLite and DuckDB; no API key needed (the LLM is faked in tests).
+      - run: pytest -v

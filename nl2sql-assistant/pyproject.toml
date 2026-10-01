@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nl2sql-assistant"
+version = "0.1.0"
+description = "Ask questions about a data warehouse in plain English: schema mapping, LLM SQL generation and query validation."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Rajat Bhola" }]
+dependencies = [
+    "duckdb>=1.0",
+    "sqlglot>=25.0",
+    "openai>=1.40",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+app = ["streamlit>=1.35", "pandas>=2.0"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+nl2sql = "nl2sql.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

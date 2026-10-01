@@ -24,6 +24,10 @@ data/raw/
 *.parquet
 *.sqlite
 *.db
+*.duckdb
+*.duckdb.wal
+nl2sql-assistant/data/
+.pytest_cache/
 chroma/
 .cache/
 
