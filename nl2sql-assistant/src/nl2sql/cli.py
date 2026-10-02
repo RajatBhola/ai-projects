@@ -2,6 +2,7 @@
 
     nl2sql seed                      # build the sample warehouse
     nl2sql ask "revenue by country"  # ask a question
+    nl2sql explain "SELECT ..."      # explain a SQL query in plain English
     nl2sql context "revenue by country"   # show what the model would see (no API call)
     nl2sql eval                      # run the evaluation set
 """
@@ -9,7 +10,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import textwrap
 from datetime import datetime
 from pathlib import Path
 
@@ -85,6 +88,105 @@ def cmd_ask(args, settings: Settings) -> int:
     return 0
 
 
+def _read_sql(args) -> str:
+    if args.file:
+        return args.file.read_text()
+    if args.sql and args.sql != "-":
+        return args.sql
+    if args.sql == "-" or not sys.stdin.isatty():
+        return sys.stdin.read()
+    return ""
+
+
+def _wrap(text: str, indent: str = "  ", first: str | None = None) -> str:
+    return textwrap.fill(text, width=88, initial_indent=first if first is not None else indent,
+                         subsequent_indent=indent)
+
+
+def render_explanation(ex, index: int | None = None) -> str:
+    a = ex.analysis
+    out = []
+    if index is not None:
+        out.append(f"=== Statement {index} ===")
+    out.append(_wrap(ex.summary, indent="", first=""))
+    if ex.steps:
+        out.append("\nStep by step")
+        out.extend(_wrap(s, indent="     ", first=f"  {i}. ") for i, s in enumerate(ex.steps, 1))
+    if ex.output_columns:
+        out.append("\nColumns returned")
+        width = min(max(len(c.name) for c in ex.output_columns), 28)
+        for c in ex.output_columns:
+            name = c.name if len(c.name) <= width else c.name[: width - 1] + "…"
+            out.append(_wrap(c.meaning or "", indent=" " * (width + 6), first=f"  {name.ljust(width)}    ")
+                       if c.meaning else f"  {name}")
+    warnings = [i for i in a.issues if i.severity == "warning"]
+    notes = [i for i in a.issues if i.severity == "info"]
+    if warnings or ex.caveats:
+        out.append("\nWatch out")
+        out.extend(_wrap(i.message, indent="    ", first="  ! ") for i in warnings)
+        out.extend(_wrap(c, indent="    ", first="  ! ") for c in ex.caveats)
+    if notes:
+        out.append("\nNotes")
+        out.extend(_wrap(i.message, indent="    ", first="  - ") for i in notes)
+    footer = f"\n{a.statement_type} · {'changes data' if a.modifies_data else 'read-only'}"
+    if a.tables:
+        footer += f" · tables: {', '.join(a.tables)}"
+    if ex.source == "llm":
+        footer += f" · {ex.input_tokens + ex.output_tokens} tokens"
+    else:
+        footer += " · offline (no LLM)"
+    out.append(footer)
+    return "\n".join(out)
+
+
+def cmd_explain(args, settings: Settings) -> int:
+    import sqlglot
+
+    from .analyzer import SQLAnalysisError
+    from .explainer import explain
+
+    sql = _read_sql(args)
+    if not sql.strip():
+        print("No SQL given. Pass it as an argument, with --file, or on stdin.", file=sys.stderr)
+        return 2
+    dialect = args.dialect or ("duckdb" if settings.db_path.suffix == ".duckdb" else "sqlite")
+    try:
+        sqlglot.Dialect.get_or_raise(dialect)
+    except ValueError:
+        print(f"Unknown dialect '{dialect}'.", file=sys.stderr)
+        return 2
+
+    semantic = SemanticLayer.empty()
+    if not args.no_semantic_layer and settings.semantic_layer_path.is_file():
+        semantic = SemanticLayer.load(settings.semantic_layer_path)
+
+    llm = None
+    if not args.offline:
+        try:
+            from .llm import OpenAIClient
+
+            llm = OpenAIClient(model=settings.openai_model)
+        except Exception as e:  # noqa: BLE001 - missing package or API key
+            print(f"Can't use the LLM ({e}).\nSet OPENAI_API_KEY in .env, or run with --offline "
+                  "for a structural explanation.", file=sys.stderr)
+            return 1
+
+    try:
+        explanations = explain(sql, llm=llm, semantic=semantic, dialect=dialect, audience=args.audience)
+    except SQLAnalysisError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+    if args.json:
+        data = [ex.to_dict() for ex in explanations]
+        print(json.dumps(data[0] if len(data) == 1 else data, indent=2, default=str))
+        return 0
+    multiple = len(explanations) > 1
+    print("\n\n".join(render_explanation(ex, i if multiple else None)
+                      for i, ex in enumerate(explanations, 1)))
+    return 0
+
+
 def cmd_eval(args, settings: Settings) -> int:
     from .evaluation import load_cases, run_eval
 
@@ -119,6 +221,20 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("seed", help="create the sample warehouse")
     p = sub.add_parser("ask", help="ask a question")
     p.add_argument("question")
+    p = sub.add_parser("explain", help="explain a SQL query in plain English",
+                       description="Explain what a SQL query does, in plain English. Nothing is executed.")
+    p.add_argument("sql", nargs="?", help="the SQL (or '-' to read stdin); omit when using --file")
+    p.add_argument("-f", "--file", type=Path, help="read the SQL from a file")
+    p.add_argument("--dialect", default=None,
+                   help="SQL dialect to parse: duckdb, postgres, snowflake, bigquery, tsql, ... "
+                        "(default: the configured database's dialect)")
+    p.add_argument("--audience", choices=["business", "technical"], default="business",
+                   help="who the explanation is for (default: business)")
+    p.add_argument("--offline", action="store_true",
+                   help="no LLM call: structural explanation and checks only (no API key needed)")
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
+    p.add_argument("--no-semantic-layer", action="store_true",
+                   help="don't use semantic_layer.yaml for table and column meanings")
     p = sub.add_parser("context", help="print the schema context for a question (no API call)")
     p.add_argument("question")
     p = sub.add_parser("eval", help="run the evaluation set")
@@ -127,7 +243,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", help="where to save the JSON report")
 
     args = parser.parse_args(argv)
-    handler = {"seed": cmd_seed, "ask": cmd_ask, "context": cmd_context, "eval": cmd_eval}[args.command]
+    handler = {"seed": cmd_seed, "ask": cmd_ask, "explain": cmd_explain,
+               "context": cmd_context, "eval": cmd_eval}[args.command]
     return handler(args, settings)
 
 

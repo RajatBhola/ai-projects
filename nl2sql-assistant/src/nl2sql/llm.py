@@ -23,13 +23,29 @@ class LLMClient(Protocol):
     def generate(self, messages: list[dict]) -> LLMResponse: ...
 
 
-def parse_response(text: str) -> LLMResponse:
-    """Parse the model's JSON. Tolerates ```json fences in case a model adds them."""
+@dataclass
+class JSONResponse:
+    data: dict
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+class JSONLLMClient(Protocol):
+    def generate_json(self, messages: list[dict], json_schema: dict) -> JSONResponse: ...
+
+
+def _load_json(text: str) -> dict:
+    """Parse JSON, tolerating ```json fences in case a model adds them."""
     text = text.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else ""
         text = text.rsplit("```", 1)[0]
-    data = json.loads(text)
+    return json.loads(text)
+
+
+def parse_response(text: str) -> LLMResponse:
+    """Parse the SQL-generation JSON into an LLMResponse."""
+    data = _load_json(text)
     return LLMResponse(
         sql=str(data.get("sql", "")).strip(),
         explanation=str(data.get("explanation", "")).strip(),
@@ -47,11 +63,12 @@ class OpenAIClient:
         self.model = model
         self.temperature = temperature
 
-    def generate(self, messages: list[dict]) -> LLMResponse:
+    def generate_json(self, messages: list[dict], json_schema: dict) -> JSONResponse:
+        """Chat completion constrained to ``json_schema``; returns the parsed object."""
         kwargs = dict(
             model=self.model,
             messages=messages,
-            response_format={"type": "json_schema", "json_schema": RESPONSE_SCHEMA},
+            response_format={"type": "json_schema", "json_schema": json_schema},
         )
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
@@ -64,10 +81,17 @@ class OpenAIClient:
             self.temperature = None
             kwargs.pop("temperature")
             resp = self.client.chat.completions.create(**kwargs)
-        result = parse_response(resp.choices[0].message.content or "{}")
-        if resp.usage:
-            result.input_tokens = resp.usage.prompt_tokens
-            result.output_tokens = resp.usage.completion_tokens
+        usage = resp.usage
+        return JSONResponse(
+            data=_load_json(resp.choices[0].message.content or "{}"),
+            input_tokens=usage.prompt_tokens if usage else 0,
+            output_tokens=usage.completion_tokens if usage else 0,
+        )
+
+    def generate(self, messages: list[dict]) -> LLMResponse:
+        resp = self.generate_json(messages, RESPONSE_SCHEMA)
+        result = parse_response(json.dumps(resp.data))
+        result.input_tokens, result.output_tokens = resp.input_tokens, resp.output_tokens
         return result
 
 
@@ -83,3 +107,16 @@ class ScriptedLLM:
         self.calls.append(messages)
         sql = self.sqls.pop(0) if self.sqls else ""
         return LLMResponse(sql=sql, explanation=self.explanation)
+
+
+class ScriptedJSONLLM:
+    """Test double for ``generate_json``: returns the given objects in order."""
+
+    def __init__(self, responses: list[dict]):
+        self.responses = list(responses)
+        self.calls: list[tuple[list[dict], dict]] = []
+
+    def generate_json(self, messages: list[dict], json_schema: dict) -> JSONResponse:
+        self.calls.append((messages, json_schema))
+        return JSONResponse(data=self.responses.pop(0) if self.responses else {},
+                            input_tokens=100, output_tokens=50)

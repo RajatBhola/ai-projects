@@ -1,6 +1,6 @@
 # NL2SQL Assistant
 
-Ask questions about a data warehouse in plain English and get back a validated SQL query, the results, and an explanation.
+Ask questions about a data warehouse in plain English and get back a validated SQL query, the results, and an explanation. Or go the other way: paste any SQL query and get a plain-English explanation of what it does, with common mistakes flagged.
 
 > "Which 3 countries had the highest revenue in 2024?"
 > → generates SQL, checks it is safe and correct against the schema, runs it, and shows the answer with the query behind it.
@@ -65,10 +65,63 @@ nl2sql seed                     # builds data/warehouse.duckdb (sample e-commerc
 nl2sql ask "What was our total revenue in 2025?"
 streamlit run app.py            # web UI
 nl2sql eval                     # accuracy on the evaluation set
-pytest                          # 90+ tests, no API key needed
+pytest                          # 130+ tests, no API key needed
 ```
 
 Settings (in `.env`): `OPENAI_MODEL` (default `gpt-4.1-mini`), `NL2SQL_DB` (a `.duckdb` or `.sqlite` file), `NL2SQL_MAX_ROWS`, `NL2SQL_MAX_ATTEMPTS`.
+
+## Explain a query (SQL → English)
+
+The reverse direction: give it any SQL query and it explains what the query does in plain English, without running it. Useful for reviewing a colleague's query, understanding a legacy report, or checking a generated query before trusting it.
+
+```bash
+nl2sql explain "SELECT c.country, SUM(oi.quantity * oi.unit_price) AS revenue
+                FROM orders o JOIN customers c ON c.customer_id = o.customer_id
+                LEFT JOIN order_items oi ON oi.order_id = o.order_id
+                WHERE o.status = 'completed' AND oi.discount > 0
+                GROUP BY 1 ORDER BY 2 DESC LIMIT 3"
+```
+
+Example output (the warnings come from the parser; the prose wording comes from the model and varies):
+
+```
+Finds the 3 countries whose customers spent the most on completed, discounted
+orders, with the total amount spent per country.
+
+Step by step
+  1. Takes only completed orders.
+  2. Looks up the customer behind each order to get their country.
+  ...
+
+Columns returned
+  country    The customer's country.
+  revenue    Total spent in EUR, before discounts are subtracted.
+
+Watch out
+  ! The filter `oi.discount > 0` is on the LEFT JOINed table oi, which drops the
+    unmatched rows the LEFT JOIN was meant to keep, so it behaves like an INNER JOIN.
+  ! Revenue here ignores discounts, unlike the official revenue definition.
+
+SELECT · read-only · tables: orders, customers, order_items · 1020 tokens
+```
+
+How it works:
+1. **Parse first** ([`analyzer.py`](src/nl2sql/analyzer.py)). sqlglot extracts the facts: tables, join types and conditions, filters, grouping, aggregations, sort, limit and output columns. A parser can't be wrong about these, so the LLM doesn't have to guess them.
+2. **Check for classic mistakes** deterministically: `x = NULL` (never true), a `LEFT JOIN` silently turned into an inner join by a `WHERE` filter, `NOT IN` with a subquery (breaks on NULLs), joins without a condition, `UPDATE`/`DELETE` without `WHERE`, `SELECT *`, missing `LIMIT`.
+3. **Explain** ([`explainer.py`](src/nl2sql/explainer.py)). The LLM writes the prose from the SQL, the parser facts and the semantic layer, so `status = 'completed'` becomes "only completed orders". It also notices when a query deviates from a business definition.
+4. **Ground the output.** The returned column list always comes from the parser; the model only supplies meanings, so it can't invent or drop columns.
+
+Options:
+
+| Option | What it does |
+|---|---|
+| `--file query.sql` or `-` | Read SQL from a file or stdin (several statements are explained one by one) |
+| `--dialect postgres` | Parse any sqlglot dialect: `snowflake`, `bigquery`, `tsql`, `postgres`, ... |
+| `--audience technical` | Use SQL terms and mention grain and performance (default: `business`) |
+| `--offline` | No LLM call or API key: structural walk-through plus checks only |
+| `--json` | Machine-readable output |
+
+dbt models work too: `{{ ref('stg_orders') }}` and `{{ source('shop', 'customers') }}` are turned into table names before parsing.
 
 ## Sample data
 
@@ -97,7 +150,9 @@ nl2sql-assistant/
 ├── semantic_layer.yaml     # business meaning of the schema
 ├── evals/questions.yaml    # evaluation set with gold SQL
 ├── src/nl2sql/
-│   ├── cli.py              # nl2sql seed | ask | context | eval
+│   ├── cli.py              # nl2sql seed | ask | explain | context | eval
+│   ├── analyzer.py         # SQL structure + mistake checks (for explain)
+│   ├── explainer.py        # SQL -> plain-English explanation
 │   ├── config.py           # settings from env / .env
 │   ├── database.py         # DuckDB / SQLite, read-only connections
 │   ├── seed.py             # sample warehouse generator

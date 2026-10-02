@@ -8,7 +8,7 @@ Each project focuses on something practical: taking raw data, turning it into so
 
 | # | Project | What it shows | Stack | Status |
 |---|---------|---------------|-------|--------|
-| 1 | [NL2SQL Assistant](nl2sql-assistant/) | Plain-English questions over a data warehouse: schema mapping, LLM SQL generation, query validation and execution-accuracy evals | Python, OpenAI, DuckDB, sqlglot, Streamlit | MVP |
+| 1 | [NL2SQL Assistant](nl2sql-assistant/) | Plain-English questions over a data warehouse (schema mapping, LLM SQL generation, query validation, execution-accuracy evals), plus SQL-to-English explanations with mistake detection | Python, OpenAI, DuckDB, sqlglot, Streamlit | MVP |
 
 ## What I'm learning
 
